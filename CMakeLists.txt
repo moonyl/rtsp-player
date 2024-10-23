@@ -14,6 +14,10 @@ set(GLAD_DIR ${CMAKE_SOURCE_DIR}/third-party/glad)
 include_directories(${GLAD_DIR}/include)
 file(GLOB GLAD_SOURCES ${GLAD_DIR}/src/*.c)
 
+# stb_image
+set(STB_DIR ${CMAKE_SOURCE_DIR}/third-party/stb)
+include_directories(${STB_DIR})
+
 # OpenGL 라이브러리 찾기
 find_package(OpenGL REQUIRED)
 
