@@ -4,6 +4,13 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+extern "C" {
+    #include <libavcodec/avcodec.h>
+    #include <libavformat/avformat.h>
+    #include <libswscale/swscale.h>
+    #include <libavutil/imgutils.h> 
+}
+
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -23,12 +30,66 @@ in vec2 TexCoord;
 uniform sampler2D texture1; // 텍스처 샘플러
 
 void main() {
-    fragColor = texture(texture1, TexCoord); // 텍스처에서 색상 샘플링
+    fragColor = texture(texture1, vec2(TexCoord.x, 1.0 - TexCoord.y)); // 영상 상하 반전
 }
-)";
+)"; 
+
 
 
 int main() {
+
+    // FFmpeg 초기화
+    AVFormatContext* formatContext = avformat_alloc_context();
+    if (avformat_open_input(&formatContext, "../../CAM3_edit_rd.mkv", nullptr, nullptr) != 0) {
+        std::cerr << "Could not open video file" << std::endl;
+        return -1;
+    }
+    
+    if (avformat_find_stream_info(formatContext, nullptr) < 0) {
+        std::cerr << "Could not find stream info" << std::endl;
+        return -1;
+    }
+
+    // 비디오 스트림 찾기
+    int videoStreamIndex = -1;
+    for (unsigned int i = 0; i < formatContext->nb_streams; i++) {
+        if (formatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            videoStreamIndex = i;
+            break;
+        }
+    }
+
+    if (videoStreamIndex == -1) {
+        std::cerr << "Could not find video stream" << std::endl;
+        return -1;
+    }
+
+    // 코덱 설정
+    AVCodecParameters* codecParams = formatContext->streams[videoStreamIndex]->codecpar;
+    const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
+    AVCodecContext* codecContext = avcodec_alloc_context3(codec);
+    avcodec_parameters_to_context(codecContext, codecParams);
+    avcodec_open2(codecContext, codec, nullptr);
+
+    // 프레임과 패킷 할당
+    AVFrame* frame = av_frame_alloc();
+    AVFrame* frameRGB = av_frame_alloc();
+    AVPacket* packet = av_packet_alloc();
+
+    // RGB 변환을 위한 버퍼 설정
+    int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecContext->width,
+                                          codecContext->height, 1);
+    uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
+    av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
+                        AV_PIX_FMT_RGB24, codecContext->width, codecContext->height, 1);
+
+    // SwsContext 설정
+    SwsContext* swsContext = sws_getContext(
+        codecContext->width, codecContext->height, codecContext->pix_fmt,
+        codecContext->width, codecContext->height, AV_PIX_FMT_RGB24,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
     // GLFW 초기화
     if (!glfwInit()) {
         const char* description;
@@ -61,21 +122,13 @@ int main() {
         return -1;
     }
 
-    // // VBO 및 VAO 설정
-    // float vertices[] = {
-    //     // 위치          // 텍스처 좌표
-    //     -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
-    //      0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
-    //      0.0f,  0.5f, 0.0f,  0.5f, 1.0f,
-    // };
-
         // VBO 및 VAO 설정
     float vertices[] = {
         // positions                    // texture coords
-         0.5f,  0.5f, 0.0f,  1.0f, 1.0f, // top right
-         0.5f, -0.5f, 0.0f,  1.0f, 0.0f, // bottom right
-        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, // bottom left
-        -0.5f,  0.5f, 0.0f,  0.0f, 1.0f  // top left 
+         1.0f,  1.0f, 0.0f,  1.0f, 1.0f, // top right
+         1.0f, -1.0f, 0.0f,  1.0f, 0.0f, // bottom right
+        -1.0f, -1.0f, 0.0f,  0.0f, 0.0f, // bottom left
+        -1.0f,  1.0f, 0.0f,  0.0f, 1.0f  // top left 
     };
 
     unsigned int indices[] = {
@@ -153,30 +206,53 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // 이미지 로드
-    int width, height, nrChannels;
+    // // 이미지 로드
+    // int width, height, nrChannels;
     
-    stbi_set_flip_vertically_on_load(true);
-    // unsigned char *data = stbi_load("../../jetpack-check.png", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    unsigned char *data = stbi_load("../../jetpack-check.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    // unsigned char *data = stbi_load("../../container.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    if (data) {
-        // 텍스처 생성
-        if (nrChannels == 4)    {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        } else {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        }
+    // stbi_set_flip_vertically_on_load(true);
+    // // unsigned char *data = stbi_load("../../jetpack-check.png", &width, &height, &nrChannels, 0); // 이미지 파일 경로
+    // unsigned char *data = stbi_load("../../jetpack-check.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
+    // // unsigned char *data = stbi_load("../../container.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
+    // if (data) {
+    //     // 텍스처 생성
+    //     if (nrChannels == 4)    {
+    //         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    //     } else {
+    //         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    //     }
         
         
-        glGenerateMipmap(GL_TEXTURE_2D);
-    } else {
-        std::cerr << "텍스처 로드 실패" << std::endl;
-    }
-    stbi_image_free(data);
+    //     glGenerateMipmap(GL_TEXTURE_2D);
+    // } else {
+    //     std::cerr << "텍스처 로드 실패" << std::endl;
+    // }
+    // stbi_image_free(data);
 
     // 메인 루프
     while (!glfwWindowShouldClose(window)) {
+
+        // 프레임 읽기
+        if (av_read_frame(formatContext, packet) >= 0) {
+            if (packet->stream_index == videoStreamIndex) {
+                // 패킷 디코딩
+                avcodec_send_packet(codecContext, packet);
+                if (avcodec_receive_frame(codecContext, frame) == 0) {
+                    // RGB로 변환
+                    sws_scale(swsContext, frame->data, frame->linesize, 0,
+                            codecContext->height, frameRGB->data, frameRGB->linesize);
+
+                    // OpenGL 텍스처 업데이트
+                    glBindTexture(GL_TEXTURE_2D, texture);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, codecContext->width, codecContext->height,
+                                0, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
+                }
+            }
+            av_packet_unref(packet);
+        } else {
+            // 파일의 끝에 도달하면 처음으로 되감기
+            av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+        }
+
         // 화면을 지우기
         glClear(GL_COLOR_BUFFER_BIT);
         
@@ -198,6 +274,20 @@ int main() {
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
+
+    // 정리
+    av_frame_free(&frame);
+    av_frame_free(&frameRGB);
+    av_packet_free(&packet);
+    av_free(buffer);
+    avcodec_free_context(&codecContext);
+    avformat_close_input(&formatContext);
+    sws_freeContext(swsContext);
+
+    glDeleteVertexArrays(1, &VAO);
+    glDeleteBuffers(1, &VBO);
+    glDeleteBuffers(1, &EBO);
+    glDeleteProgram(shaderProgram);
 
     glfwDestroyWindow(window); 
     glfwTerminate();
