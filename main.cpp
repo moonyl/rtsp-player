@@ -6,12 +6,14 @@
 
 #include <chrono>
 #include <iostream>
+#include <thread>
 
 extern "C" {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
     #include <libswscale/swscale.h>
     #include <libavutil/imgutils.h> 
+    #include <libavutil/time.h>
 } 
 
 const char* vertexShaderSource = R"(
@@ -336,6 +338,16 @@ int main() {
     // }
     // stbi_image_free(data);
 
+    // 비디오 타이밍을 위한 변수들
+    double fps = av_q2d(formatContext->streams[videoStreamIndex]->r_frame_rate);
+    double frame_delay = 1.0 / fps;
+    int64_t start_time = av_gettime();
+    int64_t frame_pts = 0;
+    
+    // 타임베이스 계산
+    AVRational time_base = formatContext->streams[videoStreamIndex]->time_base;
+    double time_base_double = av_q2d(time_base);
+
     // 메인 루프
     while (!glfwWindowShouldClose(window)) {
 
@@ -350,12 +362,26 @@ int main() {
 
         // start = end;
 
+        int64_t current_time = av_gettime() - start_time;
+
         // 프레임 읽기
         if (av_read_frame(formatContext, packet) >= 0) {
             if (packet->stream_index == videoStreamIndex) {
                 // 패킷 디코딩
                 avcodec_send_packet(codecContext, packet);
                 if (avcodec_receive_frame(codecContext, frame) == 0) {
+                    // 프레임의 표시 시간 계산
+                    frame_pts = static_cast<int64_t>(frame->pts * time_base_double * 1000000);
+                    
+                    // 프레임이 표시될 시간이 되었는지 확인
+                    if (frame_pts > current_time) {
+                        // 다음 프레임까지 대기
+                        int64_t sleep_time = frame_pts - current_time;
+                        if (sleep_time > 0 && sleep_time < 1000000) {  // 1초 이하의 대기만 허용
+                            std::this_thread::sleep_for(std::chrono::microseconds(sleep_time));
+                        }
+                    }
+
                     // RGB로 변환
                     sws_scale(swsContext, frame->data, frame->linesize, 0,
                             codecContext->height, frameRGB->data, frameRGB->linesize);
