@@ -4,12 +4,15 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <chrono>
+#include <iostream>
+
 extern "C" {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
     #include <libswscale/swscale.h>
     #include <libavutil/imgutils.h> 
-}
+} 
 
 const char* vertexShaderSource = R"(
 #version 330 core
@@ -34,7 +37,93 @@ void main() {
 }
 )"; 
 
+void GLAPIENTRY MessageCallback(GLenum source,
+    GLenum type,
+    GLuint id,
+    GLenum severity,
+    GLsizei length,
+    const GLchar* message,
+    const void* userParam)
+{
+    // 메시지 종류에 따른 접두사 설정
+    const char* severityStr;
+    switch (severity) {
+    case GL_DEBUG_SEVERITY_HIGH:
+        severityStr = "HIGH";
+        break;
+    case GL_DEBUG_SEVERITY_MEDIUM:
+        severityStr = "MEDIUM";
+        break;
+    case GL_DEBUG_SEVERITY_LOW:
+        severityStr = "LOW";
+        break;
+    case GL_DEBUG_SEVERITY_NOTIFICATION:
+        severityStr = "NOTIFICATION";
+        break;
+    default:
+        severityStr = "UNKNOWN";
+    }
 
+    // 메시지 타입 구분
+    const char* typeStr;
+    switch (type) {
+    case GL_DEBUG_TYPE_ERROR:
+        typeStr = "ERROR";
+        break;
+    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+        typeStr = "DEPRECATED";
+        break;
+    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+        typeStr = "UNDEFINED";
+        break;
+    case GL_DEBUG_TYPE_PORTABILITY:
+        typeStr = "PORTABILITY";
+        break;
+    case GL_DEBUG_TYPE_PERFORMANCE:
+        typeStr = "PERFORMANCE";
+        break;
+    case GL_DEBUG_TYPE_OTHER:
+        typeStr = "OTHER";
+        break;
+    default:
+        typeStr = "UNKNOWN";
+    }
+
+    // 소스 구분
+    const char* sourceStr;
+    switch (source) {
+    case GL_DEBUG_SOURCE_API:
+        sourceStr = "API";
+        break;
+    case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+        sourceStr = "WINDOW SYSTEM";
+        break;
+    case GL_DEBUG_SOURCE_SHADER_COMPILER:
+        sourceStr = "SHADER COMPILER";
+        break;
+    case GL_DEBUG_SOURCE_THIRD_PARTY:
+        sourceStr = "THIRD PARTY";
+        break;
+    case GL_DEBUG_SOURCE_APPLICATION:
+        sourceStr = "APPLICATION";
+        break;
+    case GL_DEBUG_SOURCE_OTHER:
+        sourceStr = "OTHER";
+        break;
+    default:
+        sourceStr = "UNKNOWN";
+    }
+
+    // 메시지 출력
+    std::cerr << "GL " << severityStr << " [" << typeStr << "] from " << sourceStr
+        << " (ID: " << id << "): " << message << std::endl;
+
+    // 높은 심각도의 에러인 경우 프로그램 중단
+    if (severity == GL_DEBUG_SEVERITY_HIGH) {
+        std::cerr << "Aborting due to high severity message" << std::endl;
+        abort();
+    }
+}
 
 int main() {
 
@@ -100,9 +189,11 @@ int main() {
     }
 
     // OpenGL 버전과 프로파일 설정
+    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);    
+    glfwWindowHint(GLFW_DOUBLEBUFFER, true);    
 
     // GLFW 윈도우 생성
     GLFWwindow* window = glfwCreateWindow(800, 600, "RTSP Player", NULL, NULL);
@@ -116,11 +207,27 @@ int main() {
 
     glfwMakeContextCurrent(window);  
 
+    // VSync를 비활성화
+    glfwSwapInterval(0);  // VSync 비활성화
+
     // Glad 초기화
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         std::cerr << "Glad 초기화 실패" << std::endl;
         return -1;
     }
+
+    // 6. 디버그 출력 설정
+    glEnable(GL_DEBUG_OUTPUT);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glDebugMessageCallback(MessageCallback, nullptr);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+
+
+    const GLubyte* renderer = glGetString(GL_RENDERER); // GPU 이름
+    const GLubyte* version = glGetString(GL_VERSION);   // OpenGL 버전
+
+    std::cout << "Renderer: " << renderer << std::endl;
+    std::cout << "OpenGL Version: " << version << std::endl;
 
         // VBO 및 VAO 설정
     float vertices[] = {
@@ -188,17 +295,18 @@ int main() {
     glAttachShader(shaderProgram, vertexShader);
     glAttachShader(shaderProgram, fragmentShader);
     glLinkProgram(shaderProgram);
+    //glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0); // 텍스처 유닛 0과 연결
 
     // 셰이더 삭제
     glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    glUniform1i(glGetUniformLocation(shaderProgram, "texture1"), 0); // 텍스처 유닛 0과 연결
+    glDeleteShader(fragmentShader);    
 
     // 텍스처 로드
     unsigned int texture;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, codecContext->width, codecContext->height,
+            0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
 
     // 텍스처의 필라(필터링) 옵션 설정
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -231,6 +339,17 @@ int main() {
     // 메인 루프
     while (!glfwWindowShouldClose(window)) {
 
+        // // 함수 실행 전후에 시간을 측정하는 예제
+        // static auto start = std::chrono::high_resolution_clock::now();
+
+        // auto end = std::chrono::high_resolution_clock::now();
+        // //std::chrono::duration<double> duration = end - start;
+        // //std::cout << "av_read_frame took " << duration.count() << " seconds." << std::endl;
+        // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        // std::cout << "av_read_frame took " << duration.count() << " msec." << std::endl;
+
+        // start = end;
+
         // 프레임 읽기
         if (av_read_frame(formatContext, packet) >= 0) {
             if (packet->stream_index == videoStreamIndex) {
@@ -243,8 +362,13 @@ int main() {
 
                     // OpenGL 텍스처 업데이트
                     glBindTexture(GL_TEXTURE_2D, texture);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, codecContext->width, codecContext->height,
-                                0, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
+                    // glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, codecContext->width, codecContext->height,
+                    //             0, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, codecContext->width, codecContext->height, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
+                }
+                else {
+                    glfwPollEvents();
+                    continue;
                 }
             }
             av_packet_unref(packet);
@@ -255,13 +379,13 @@ int main() {
 
         // 화면을 지우기
         glClear(GL_COLOR_BUFFER_BIT);
-        
-        // 텍스처 사용
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texture);
 
         // 셰이더 프로그램 사용
         glUseProgram(shaderProgram);
+
+        // 텍스처 사용
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
         
 
         // VAO 바인딩 및 삼각형 그리기
@@ -272,7 +396,9 @@ int main() {
 
         // 윈도우 버퍼 교환
         glfwSwapBuffers(window);
+
         glfwPollEvents();
+
     }
 
     // 정리
