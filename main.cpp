@@ -8,6 +8,10 @@
 #include <iostream>
 #include <thread>
 
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+
 extern "C" {
     #include <libavcodec/avcodec.h>
     #include <libavformat/avformat.h>
@@ -38,6 +42,81 @@ void main() {
     fragColor = texture(texture1, vec2(TexCoord.x, 1.0 - TexCoord.y)); // 영상 상하 반전
 }
 )"; 
+
+
+// 프레임 버퍼 구조체
+struct FrameBuffer {
+    uint8_t* data;
+    int size;
+    int64_t pts;
+};
+
+// 전역 변수
+std::queue<FrameBuffer> frameQueue;
+std::mutex queueMutex;
+std::condition_variable queueCondition;
+bool isPlaying = true;
+const int MAX_QUEUE_SIZE = 30;
+
+// 디코딩 스레드 함수
+void decodingThread(AVFormatContext* formatContext, int videoStreamIndex, 
+                   AVCodecContext* codecContext, SwsContext* swsContext,
+                   int width, int height) {
+    AVFrame* frame = av_frame_alloc();
+    AVFrame* frameRGB = av_frame_alloc();
+    AVPacket* packet = av_packet_alloc();
+    
+    // RGB 버퍼 설정
+    int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, width, height, 1);
+    uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
+    av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
+                        AV_PIX_FMT_RGB24, width, height, 1);
+
+    while (isPlaying) {
+        // 함수 실행 전후에 시간을 측정하는 예제
+        // auto start = std::chrono::high_resolution_clock::now();     
+
+        if (av_read_frame(formatContext, packet) >= 0) {
+        // auto end = std::chrono::high_resolution_clock::now();
+        //std::chrono::duration<double> duration = end - start;
+        //std::cout << "av_read_frame took " << duration.count() << " seconds." << std::endl;
+        // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        // std::cout << "av_read_frame took " << duration.count() << " msec." << std::endl;   
+
+            if (packet->stream_index == videoStreamIndex) {
+                if (avcodec_send_packet(codecContext, packet) == 0) {
+                    while (avcodec_receive_frame(codecContext, frame) == 0) {
+                        sws_scale(swsContext, frame->data, frame->linesize, 0,
+                                height, frameRGB->data, frameRGB->linesize);
+
+                        // 프레임 큐에 추가
+                        std::unique_lock<std::mutex> lock(queueMutex);
+                        queueCondition.wait(lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
+
+                        FrameBuffer fb;
+                        fb.size = numBytes;
+                        fb.data = (uint8_t*)av_malloc(numBytes);
+                        memcpy(fb.data, frameRGB->data[0], numBytes);
+                        fb.pts = frame->pts;
+
+                        frameQueue.push(fb);
+                        lock.unlock();
+                        queueCondition.notify_one();
+                    }
+                }
+            }
+            av_packet_unref(packet);
+        } else {
+            // RTSP의 경우 스트림이 끝나도 계속 시도
+            av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+        }
+    }
+
+    av_frame_free(&frame);
+    av_frame_free(&frameRGB);
+    av_packet_free(&packet);
+    av_free(buffer);
+}
 
 void GLAPIENTRY MessageCallback(GLenum source,
     GLenum type,
@@ -128,11 +207,22 @@ void GLAPIENTRY MessageCallback(GLenum source,
 }
 
 int main() {
+    // FFmpeg 네트워king 초기화
+    avformat_network_init();
 
+    // RTSP 연결 설정
+    AVDictionary* options = nullptr;
+    // RTSP 연결 타임아웃 설정 (5초)
+    av_dict_set(&options, "rtsp_transport", "tcp", 0);  // TCP 사용
+    av_dict_set(&options, "stimeout", "5000000", 0);   // 타임아웃 5초
     // FFmpeg 초기화
     AVFormatContext* formatContext = avformat_alloc_context();
-    if (avformat_open_input(&formatContext, "../../CAM3_edit_rd.mkv", nullptr, nullptr) != 0) {
-        std::cerr << "Could not open video file" << std::endl;
+
+    // RTSP URL 설정 (실제 RTSP 스트림 URL로 변경 필요)
+    const char* rtspUrl = "rtsp://admin:q1w2e3r4@@192.168.15.83:50554/rtsp/camera1/high";
+
+    if (avformat_open_input(&formatContext, rtspUrl, nullptr, &options) != 0) {
+        std::cerr << "Could not open RTSP stream" << std::endl;
         return -1;
     }
     
@@ -162,17 +252,6 @@ int main() {
     avcodec_parameters_to_context(codecContext, codecParams);
     avcodec_open2(codecContext, codec, nullptr);
 
-    // 프레임과 패킷 할당
-    AVFrame* frame = av_frame_alloc();
-    AVFrame* frameRGB = av_frame_alloc();
-    AVPacket* packet = av_packet_alloc();
-
-    // RGB 변환을 위한 버퍼 설정
-    int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecContext->width,
-                                          codecContext->height, 1);
-    uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
-    av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
-                        AV_PIX_FMT_RGB24, codecContext->width, codecContext->height, 1);
 
     // SwsContext 설정
     SwsContext* swsContext = sws_getContext(
@@ -316,27 +395,7 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    // // 이미지 로드
-    // int width, height, nrChannels;
-    
-    // stbi_set_flip_vertically_on_load(true);
-    // // unsigned char *data = stbi_load("../../jetpack-check.png", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    // unsigned char *data = stbi_load("../../jetpack-check.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    // // unsigned char *data = stbi_load("../../container.jpg", &width, &height, &nrChannels, 0); // 이미지 파일 경로
-    // if (data) {
-    //     // 텍스처 생성
-    //     if (nrChannels == 4)    {
-    //         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    //     } else {
-    //         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-    //     }
-        
-        
-    //     glGenerateMipmap(GL_TEXTURE_2D);
-    // } else {
-    //     std::cerr << "텍스처 로드 실패" << std::endl;
-    // }
-    // stbi_image_free(data);
+
 
     // 비디오 타이밍을 위한 변수들
     double fps = av_q2d(formatContext->streams[videoStreamIndex]->r_frame_rate);
@@ -348,90 +407,57 @@ int main() {
     AVRational time_base = formatContext->streams[videoStreamIndex]->time_base;
     double time_base_double = av_q2d(time_base);
 
+    // 디코딩 스레드 시작
+    std::thread decoder(decodingThread, formatContext, videoStreamIndex, 
+                       codecContext, swsContext, codecContext->width, 
+                       codecContext->height);
     // 메인 루프
     while (!glfwWindowShouldClose(window)) {
 
-        // // 함수 실행 전후에 시간을 측정하는 예제
-        // static auto start = std::chrono::high_resolution_clock::now();
+        // 프레임 가져오기
+        FrameBuffer currentFrame;
+        bool hasFrame = false;
 
-        // auto end = std::chrono::high_resolution_clock::now();
-        // //std::chrono::duration<double> duration = end - start;
-        // //std::cout << "av_read_frame took " << duration.count() << " seconds." << std::endl;
-        // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        // std::cout << "av_read_frame took " << duration.count() << " msec." << std::endl;
-
-        // start = end;
-
-        int64_t current_time = av_gettime() - start_time;
-
-        // 프레임 읽기
-        if (av_read_frame(formatContext, packet) >= 0) {
-            if (packet->stream_index == videoStreamIndex) {
-                // 패킷 디코딩
-                avcodec_send_packet(codecContext, packet);
-                if (avcodec_receive_frame(codecContext, frame) == 0) {
-                    // 프레임의 표시 시간 계산
-                    frame_pts = static_cast<int64_t>(frame->pts * time_base_double * 1000000);
-                    
-                    // 프레임이 표시될 시간이 되었는지 확인
-                    if (frame_pts > current_time) {
-                        // 다음 프레임까지 대기
-                        int64_t sleep_time = frame_pts - current_time;
-                        if (sleep_time > 0 && sleep_time < 1000000) {  // 1초 이하의 대기만 허용
-                            std::this_thread::sleep_for(std::chrono::microseconds(sleep_time));
-                        }
-                    }
-
-                    // RGB로 변환
-                    sws_scale(swsContext, frame->data, frame->linesize, 0,
-                            codecContext->height, frameRGB->data, frameRGB->linesize);
-
-                    // OpenGL 텍스처 업데이트
-                    glBindTexture(GL_TEXTURE_2D, texture);
-                    // glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, codecContext->width, codecContext->height,
-                    //             0, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
-                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, codecContext->width, codecContext->height, GL_RGB, GL_UNSIGNED_BYTE, frameRGB->data[0]);
-                }
-                else {
-                    glfwPollEvents();
-                    continue;
-                }
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            if (!frameQueue.empty()) {
+                currentFrame = frameQueue.front();
+                frameQueue.pop();
+                hasFrame = true;
+                queueCondition.notify_one();
             }
-            av_packet_unref(packet);
-        } else {
-            // 파일의 끝에 도달하면 처음으로 되감기
-            av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
         }
 
-        // 화면을 지우기
+        if (hasFrame) {
+            // OpenGL 텍스처 업데이트
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 
+                           codecContext->width, codecContext->height,
+                           GL_RGB, GL_UNSIGNED_BYTE, currentFrame.data);
+
+            av_free(currentFrame.data);
+        }
+
+        // OpenGL 렌더링 (기존 코드와 동일)
         glClear(GL_COLOR_BUFFER_BIT);
-
-        // 셰이더 프로그램 사용
         glUseProgram(shaderProgram);
-
-        // 텍스처 사용
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
-        
-
-        // VAO 바인딩 및 삼각형 그리기
         glBindVertexArray(VAO);
-        // glDrawArrays(GL_TRIANGLES, 0, 3); // 삼각형 그리기
-        // glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, 0); // 인덱스 드로우
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0); // 인덱스 드로우
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
-        // 윈도우 버퍼 교환
         glfwSwapBuffers(window);
-
         glfwPollEvents();
+
+
 
     }
 
     // 정리
-    av_frame_free(&frame);
-    av_frame_free(&frameRGB);
-    av_packet_free(&packet);
-    av_free(buffer);
+    isPlaying = false;
+    decoder.join();
+
+
     avcodec_free_context(&codecContext);
     avformat_close_input(&formatContext);
     sws_freeContext(swsContext);
