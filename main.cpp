@@ -18,6 +18,8 @@ extern "C" {
     #include <libswscale/swscale.h>
     #include <libavutil/imgutils.h> 
     #include <libavutil/time.h>
+    #include <libavutil/hwcontext.h>
+    #include <libavutil/hwcontext_dxva2.h>
 } 
 
 const char* vertexShaderSource = R"(
@@ -58,11 +60,25 @@ std::condition_variable queueCondition;
 bool isPlaying = true;
 const int MAX_QUEUE_SIZE = 30;
 
+// 하드웨어 디코딩을 위한 컨텍스트
+static AVBufferRef* hw_device_ctx = nullptr;
+
+static int init_hw_decoder(AVCodecContext* ctx) {
+    int err = 0;
+    if ((err = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_DXVA2, nullptr, nullptr, 0)) < 0) {
+        std::cerr << "Failed to create DXVA2 device: " << err << std::endl;
+        return err;
+    }
+    ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+    return err;
+}
+
 // 디코딩 스레드 함수
 void decodingThread(AVFormatContext* formatContext, int videoStreamIndex, 
-                   AVCodecContext* codecContext, SwsContext* swsContext,
+                   AVCodecContext* codecContext,
                    int width, int height) {
     AVFrame* frame = av_frame_alloc();
+    AVFrame* sw_frame = av_frame_alloc();
     AVFrame* frameRGB = av_frame_alloc();
     AVPacket* packet = av_packet_alloc();
     
@@ -71,6 +87,13 @@ void decodingThread(AVFormatContext* formatContext, int videoStreamIndex,
     uint8_t* buffer = (uint8_t*)av_malloc(numBytes * sizeof(uint8_t));
     av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
                         AV_PIX_FMT_RGB24, width, height, 1);
+
+    // 하드웨어 디코딩된 프레임을 RGB로 변환하기 위한 SwsContext
+    SwsContext* swsContext = sws_getContext(
+        width, height, AV_PIX_FMT_NV12,  // DXVA2 디코더의 일반적인 출력 포맷
+        width, height, AV_PIX_FMT_RGB24, // OpenGL 텍스처용 포맷
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );                        
 
     while (isPlaying) {
         // 함수 실행 전후에 시간을 측정하는 예제
@@ -84,26 +107,52 @@ void decodingThread(AVFormatContext* formatContext, int videoStreamIndex,
         // std::cout << "av_read_frame took " << duration.count() << " msec." << std::endl;   
 
             if (packet->stream_index == videoStreamIndex) {
-                if (avcodec_send_packet(codecContext, packet) == 0) {
-                    while (avcodec_receive_frame(codecContext, frame) == 0) {
+                int ret = avcodec_send_packet(codecContext, packet);
+                if (ret < 0) {
+                    std::cerr << "Error sending packet for decoding" << std::endl;
+                    continue;
+                }                
+                
+                while (ret >= 0) {
+                    ret = avcodec_receive_frame(codecContext, frame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                        break;
+                    } else if (ret < 0) {
+                        std::cerr << "Error during decoding" << std::endl;
+                        break;
+                    }
+
+                    // 하드웨어 프레임을 시스템 메모리로 전송
+                    if (frame->format == AV_PIX_FMT_DXVA2_VLD) {
+                        if (av_hwframe_transfer_data(sw_frame, frame, 0) < 0) {
+                            std::cerr << "Error transferring frame from GPU to CPU" << std::endl;
+                            continue;
+                        }
+                        
+                        // NV12에서 RGB로 변환
+                        sws_scale(swsContext, sw_frame->data, sw_frame->linesize, 0,
+                                height, frameRGB->data, frameRGB->linesize);
+                    } else {
+                        // 하드웨어 가속이 실패한 경우 직접 변환
                         sws_scale(swsContext, frame->data, frame->linesize, 0,
                                 height, frameRGB->data, frameRGB->linesize);
+                    }                                        
 
-                        // 프레임 큐에 추가
-                        std::unique_lock<std::mutex> lock(queueMutex);
-                        queueCondition.wait(lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
+                    // 프레임 큐에 추가
+                    std::unique_lock<std::mutex> lock(queueMutex);
+                    queueCondition.wait(lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
 
-                        FrameBuffer fb;
-                        fb.size = numBytes;
-                        fb.data = (uint8_t*)av_malloc(numBytes);
-                        memcpy(fb.data, frameRGB->data[0], numBytes);
-                        fb.pts = frame->pts;
+                    FrameBuffer fb;
+                    fb.size = numBytes;
+                    fb.data = (uint8_t*)av_malloc(numBytes);
+                    memcpy(fb.data, frameRGB->data[0], numBytes);
+                    fb.pts = frame->pts;
 
-                        frameQueue.push(fb);
-                        lock.unlock();
-                        queueCondition.notify_one();
-                    }
+                    frameQueue.push(fb);
+                    lock.unlock();
+                    queueCondition.notify_one();
                 }
+                
             }
             av_packet_unref(packet);
         } else {
@@ -111,8 +160,9 @@ void decodingThread(AVFormatContext* formatContext, int videoStreamIndex,
             av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
         }
     }
-
+    sws_freeContext(swsContext);
     av_frame_free(&frame);
+    av_frame_free(&sw_frame);
     av_frame_free(&frameRGB);
     av_packet_free(&packet);
     av_free(buffer);
@@ -245,20 +295,55 @@ int main() {
         return -1;
     }
 
-    // 코덱 설정
+    // 하드웨어 가속 디코더 설정
     AVCodecParameters* codecParams = formatContext->streams[videoStreamIndex]->codecpar;
-    const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
+    const AVCodec* codec = avcodec_find_decoder_by_name("h264_dxva2"); // DXVA2 디코더
+    if (!codec) {
+        std::cerr << "DXVA2 decoder not found, falling back to CPU decoder" << std::endl;
+        codec = avcodec_find_decoder(codecParams->codec_id);
+    }
+
     AVCodecContext* codecContext = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(codecContext, codecParams);
-    avcodec_open2(codecContext, codec, nullptr);
+
+    // 하드웨어 디코더 초기화
+    if (init_hw_decoder(codecContext) < 0) {
+        std::cerr << "Failed to initialize hardware decoder, falling back to software decoding" << std::endl;
+        codec = avcodec_find_decoder(codecParams->codec_id);
+        codecContext = avcodec_alloc_context3(codec);
+        avcodec_parameters_to_context(codecContext, codecParams);
+    }
+
+    // 디코더 픽셀 포맷 설정
+    codecContext->get_format = [](AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) -> enum AVPixelFormat {
+        const enum AVPixelFormat* p;
+        for (p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+            if (*p == AV_PIX_FMT_DXVA2_VLD)
+                return *p;
+        }
+        std::cerr << "Failed to get DXVA2 format, falling back to default" << std::endl;
+        return pix_fmts[0];
+    };
+
+    if (avcodec_open2(codecContext, codec, nullptr) < 0) {
+        std::cerr << "Failed to open codec" << std::endl;
+        return -1;
+    }
+
+    // // 코덱 설정
+    // AVCodecParameters* codecParams = formatContext->streams[videoStreamIndex]->codecpar;
+    // const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
+    // AVCodecContext* codecContext = avcodec_alloc_context3(codec);
+    // avcodec_parameters_to_context(codecContext, codecParams);
+    // avcodec_open2(codecContext, codec, nullptr);
 
 
-    // SwsContext 설정
-    SwsContext* swsContext = sws_getContext(
-        codecContext->width, codecContext->height, codecContext->pix_fmt,
-        codecContext->width, codecContext->height, AV_PIX_FMT_RGB24,
-        SWS_BILINEAR, nullptr, nullptr, nullptr
-    );
+    // // SwsContext 설정
+    // SwsContext* swsContext = sws_getContext(
+    //     codecContext->width, codecContext->height, codecContext->pix_fmt,
+    //     codecContext->width, codecContext->height, AV_PIX_FMT_RGB24,
+    //     SWS_BILINEAR, nullptr, nullptr, nullptr
+    // );
 
     // GLFW 초기화
     if (!glfwInit()) {
@@ -409,8 +494,7 @@ int main() {
 
     // 디코딩 스레드 시작
     std::thread decoder(decodingThread, formatContext, videoStreamIndex, 
-                       codecContext, swsContext, codecContext->width, 
-                       codecContext->height);
+                       codecContext, codecContext->width, codecContext->height);
     // 메인 루프
     while (!glfwWindowShouldClose(window)) {
 
@@ -457,10 +541,12 @@ int main() {
     isPlaying = false;
     decoder.join();
 
+    if (hw_device_ctx)
+        av_buffer_unref(&hw_device_ctx);
 
     avcodec_free_context(&codecContext);
     avformat_close_input(&formatContext);
-    sws_freeContext(swsContext);
+    // sws_freeContext(swsContext);
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
