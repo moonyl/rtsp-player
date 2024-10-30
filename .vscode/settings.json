@@ -1,5 +1,13 @@
 {
+  "editor.defaultFormatter": "ms-vscode.cpptools",
+  "cmake.options.statusBarVisibility": "visible",
+  "editor.formatOnSave": true,
+  "C_Cpp.clang_format_style": "file",
+  "C_Cpp.errorSquiggles": "disabled",
   "files.associations": {
-    "ostream": "cpp"
-  }
+    "ostream": "cpp",
+    "mutex": "cpp",
+    "xstring": "cpp"
+  },
+  "C_Cpp.clang_format_fallbackStyle": "LLVM"
 }

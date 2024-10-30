@@ -40,7 +40,19 @@ set(FFMPEG_DLLS
 )
 
 
-add_executable(RTSPPlayer main.cpp ${GLAD_SOURCES})
+add_executable(RTSPPlayer 
+    FrameQueue.h
+    decode-thread.h
+    debug-message-handler.h
+    check-error.h
+    open-rtsp.h
+    create-window.h
+    init-gl.h
+    print-info.h
+    vertex-buffer.h
+    render-scene.h
+    main.cpp 
+    ${GLAD_SOURCES})
 
 target_link_libraries(RTSPPlayer
     OpenGL::GL
