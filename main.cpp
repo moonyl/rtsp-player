@@ -114,12 +114,6 @@ int main() {
     return -1;
   }
 
-  // 비디오 타이밍을 위한 변수들
-  double fps = av_q2d(formatContext->streams[videoStreamIndex]->r_frame_rate);
-  double frame_delay = 1.0 / fps;
-  int64_t start_time = av_gettime();
-  int64_t frame_pts = 0;
-
   // 디코딩 스레드 시작
   std::thread decoder(decodingThread, formatContext, videoStreamIndex,
                       codecContext, swsContext, codecContext->width,
