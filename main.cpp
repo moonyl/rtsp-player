@@ -66,8 +66,29 @@ int main() {
   // 코덱 설정
   AVCodecParameters *codecParams =
       formatContext->streams[videoStreamIndex]->codecpar;
-  const AVCodec *codec = avcodec_find_decoder(codecParams->codec_id);
+
+  //   const AVCodec *codec = avcodec_find_decoder(codecParams->codec_id);
+  // HW decoder 사용
+  const AVCodec *codec = avcodec_find_decoder_by_name("h264_cuvid");
+  if (!codec) {
+    std::cerr << "Codec 'h264_cuvid' not found" << std::endl;
+    return -1;
+  }
+
   AVCodecContext *codecContext = avcodec_alloc_context3(codec);
+
+  // HW device context 설정
+  AVBufferRef *hw_device_ctx = nullptr;
+  if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr,
+                             nullptr, 0) < 0) {
+    std::cerr << "Failed to create CUDA device context" << std::endl;
+    avcodec_free_context(&codecContext);
+    return -1;
+  }
+  codecContext->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+  codecContext->pkt_timebase =
+      formatContext->streams[videoStreamIndex]->time_base;
+
   //   avcodec_parameters_to_context(codecContext, codecParams);
   //   avcodec_open2(codecContext, codec, nullptr);
   check_ffmpeg_error(avcodec_parameters_to_context(codecContext, codecParams),
@@ -76,10 +97,11 @@ int main() {
                      "Failed to open codec");
 
   // SwsContext 설정
-  SwsContext *swsContext = sws_getContext(
-      codecContext->width, codecContext->height, codecContext->pix_fmt,
-      codecContext->width, codecContext->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
-      nullptr, nullptr, nullptr);
+  SwsContext *swsContext =
+      sws_getContext(codecContext->width, codecContext->height,
+                     AV_PIX_FMT_NV12 /*codecContext->pix_fmt*/,
+                     codecContext->width, codecContext->height,
+                     AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
 
   initializeGLFW();
   GLFWwindow *window = createGLFWWindow("RTSP Player", 640, 360);

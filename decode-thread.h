@@ -76,9 +76,46 @@ void decodingThread(AVFormatContext *formatContext, int videoStreamIndex,
 
     if (packet->stream_index == videoStreamIndex) {
       if (avcodec_send_packet(codecContext, packet) == 0) {
+
         while (avcodec_receive_frame(codecContext, frame) == 0) {
-          sws_scale(swsContext, frame->data, frame->linesize, 0, height,
+          AVFrame *frameCPU = av_frame_alloc();
+          if (!frameCPU) {
+            std::cerr << "Failed to allocate frameCPU" << std::endl;
+            continue; // 에러 처리
+          }
+          // // frameCPU의 크기 및 포맷 설정
+          // frameCPU->width = codecContext->width;
+          // frameCPU->height = codecContext->height;
+          // frameCPU->format = AV_PIX_FMT_RGB24;
+
+          // // 메모리 할당
+          // if (av_frame_get_buffer(frameCPU, 0) < 0) {
+          //   std::cerr << "Failed to allocate buffer for frameCPU" <<
+          //   std::endl; av_frame_free(&frameCPU); continue;
+          // }
+
+          if (av_hwframe_transfer_data(frameCPU, frame, 0) < 0) {
+            std::cerr << "Failed to transfer frame to CPU" << std::endl;
+            av_frame_free(&frameCPU);
+            continue;
+          }
+
+          if (!frameCPU || !frameCPU->data[0]) {
+            std::cerr << "frameCPU is invalid" << std::endl;
+            continue; // frameCPU가 유효하지 않음
+          }
+
+          if (!frameRGB || !frameRGB->data[0]) {
+            std::cerr << "frameRGB is invalid" << std::endl;
+            continue; // frameRGB가 유효하지 않음
+          }
+
+          sws_scale(swsContext, frameCPU->data, frameCPU->linesize, 0, height,
                     frameRGB->data, frameRGB->linesize);
+          av_frame_free(&frameCPU);
+
+          // sws_scale(swsContext, frame->data, frame->linesize, 0, height,
+          //           frameRGB->data, frameRGB->linesize);
 
           FrameBuffer fb;
           fb.size = numBytes;
