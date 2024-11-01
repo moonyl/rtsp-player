@@ -32,112 +32,114 @@ private:
   double time_base_double_;
 };
 
-// 디코딩 스레드 함수
-void decodingThread(AVFormatContext *formatContext, int videoStreamIndex,
-                    AVCodecContext *codecContext, SwsContext *swsContext,
-                    int width, int height) {
-  VideoTiming videoTiming(formatContext, videoStreamIndex);
+// // 디코딩 스레드 함수
+// void decodingThread(AVFormatContext *formatContext, int videoStreamIndex,
+//                     AVCodecContext *codecContext, SwsContext *swsContext,
+//                     int width, int height) {
+//   VideoTiming videoTiming(formatContext, videoStreamIndex);
 
-  AVFrame *frame = av_frame_alloc();
-  AVFrame *frameRGB = av_frame_alloc();
-  AVPacket *packet = av_packet_alloc();
+//   AVFrame *frame = av_frame_alloc();
+//   AVFrame *frameRGB = av_frame_alloc();
+//   AVPacket *packet = av_packet_alloc();
 
-  if (!frame || !frameRGB || !packet) {
-    std::cerr << "Memory allocation failed!" << std::endl;
-    // 적절한 에러 처리 추가 (예: 함수 종료 또는 예외 발생)
-    return;
-  }
+//   if (!frame || !frameRGB || !packet) {
+//     std::cerr << "Memory allocation failed!" << std::endl;
+//     // 적절한 에러 처리 추가 (예: 함수 종료 또는 예외 발생)
+//     return;
+//   }
 
-  // RGB 버퍼 설정
-  int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, width, height, 1);
-  uint8_t *buffer = (uint8_t *)av_malloc(numBytes * sizeof(uint8_t));
-  if (!buffer) {
-    std::cerr << "Memory allocation failed!" << std::endl;
-    av_frame_free(&frame);
-    av_frame_free(&frameRGB);
-    av_packet_free(&packet);
-    return;
-  }
+//   // RGB 버퍼 설정
+//   int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, width, height,
+//   1); uint8_t *buffer = (uint8_t *)av_malloc(numBytes * sizeof(uint8_t)); if
+//   (!buffer) {
+//     std::cerr << "Memory allocation failed!" << std::endl;
+//     av_frame_free(&frame);
+//     av_frame_free(&frameRGB);
+//     av_packet_free(&packet);
+//     return;
+//   }
 
-  av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
-                       AV_PIX_FMT_RGB24, width, height, 1);
+//   av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer,
+//                        AV_PIX_FMT_RGB24, width, height, 1);
 
-  while (isPlaying) {
-    int ret = av_read_frame(formatContext, packet);
-    if (ret < 0) {
-      // 에러 처리 개선:  av_read_frame의 에러 코드 확인
-      if (ret != AVERROR_EOF) { // EOF는 예외처리
-        std::cerr << "av_read_frame error: " << ret << std::endl;
-        //  더 적절한 에러 처리 추가 (예: 재접속 시도 또는 함수 종료)
-      }
-      av_seek_frame(formatContext, videoStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
-      continue; // 다음 반복으로 이동
-    }
+//   while (isPlaying) {
+//     int ret = av_read_frame(formatContext, packet);
+//     if (ret < 0) {
+//       // 에러 처리 개선:  av_read_frame의 에러 코드 확인
+//       if (ret != AVERROR_EOF) { // EOF는 예외처리
+//         std::cerr << "av_read_frame error: " << ret << std::endl;
+//         //  더 적절한 에러 처리 추가 (예: 재접속 시도 또는 함수 종료)
+//       }
+//       av_seek_frame(formatContext, videoStreamIndex, 0,
+//       AVSEEK_FLAG_BACKWARD); continue; // 다음 반복으로 이동
+//     }
 
-    if (packet->stream_index == videoStreamIndex) {
-      if (avcodec_send_packet(codecContext, packet) == 0) {
+//     if (packet->stream_index == videoStreamIndex) {
+//       if (avcodec_send_packet(codecContext, packet) == 0) {
 
-        while (avcodec_receive_frame(codecContext, frame) == 0) {
-          AVFrame *frameCPU = av_frame_alloc();
-          if (!frameCPU) {
-            std::cerr << "Failed to allocate frameCPU" << std::endl;
-            continue; // 에러 처리
-          }
-          // // frameCPU의 크기 및 포맷 설정
-          // frameCPU->width = codecContext->width;
-          // frameCPU->height = codecContext->height;
-          // frameCPU->format = AV_PIX_FMT_RGB24;
+//         while (avcodec_receive_frame(codecContext, frame) == 0) {
+//           AVFrame *frameCPU = av_frame_alloc();
+//           if (!frameCPU) {
+//             std::cerr << "Failed to allocate frameCPU" << std::endl;
+//             continue; // 에러 처리
+//           }
+//           // // frameCPU의 크기 및 포맷 설정
+//           // frameCPU->width = codecContext->width;
+//           // frameCPU->height = codecContext->height;
+//           // frameCPU->format = AV_PIX_FMT_RGB24;
 
-          // // 메모리 할당
-          // if (av_frame_get_buffer(frameCPU, 0) < 0) {
-          //   std::cerr << "Failed to allocate buffer for frameCPU" <<
-          //   std::endl; av_frame_free(&frameCPU); continue;
-          // }
+//           // // 메모리 할당
+//           // if (av_frame_get_buffer(frameCPU, 0) < 0) {
+//           //   std::cerr << "Failed to allocate buffer for frameCPU" <<
+//           //   std::endl; av_frame_free(&frameCPU); continue;
+//           // }
 
-          if (av_hwframe_transfer_data(frameCPU, frame, 0) < 0) {
-            std::cerr << "Failed to transfer frame to CPU" << std::endl;
-            av_frame_free(&frameCPU);
-            continue;
-          }
+//           if (av_hwframe_transfer_data(frameCPU, frame, 0) < 0) {
+//             std::cerr << "Failed to transfer frame to CPU" << std::endl;
+//             av_frame_free(&frameCPU);
+//             continue;
+//           }
 
-          if (!frameCPU || !frameCPU->data[0]) {
-            std::cerr << "frameCPU is invalid" << std::endl;
-            continue; // frameCPU가 유효하지 않음
-          }
+//           if (!frameCPU || !frameCPU->data[0]) {
+//             std::cerr << "frameCPU is invalid" << std::endl;
+//             continue; // frameCPU가 유효하지 않음
+//           }
 
-          if (!frameRGB || !frameRGB->data[0]) {
-            std::cerr << "frameRGB is invalid" << std::endl;
-            continue; // frameRGB가 유효하지 않음
-          }
+//           if (!frameRGB || !frameRGB->data[0]) {
+//             std::cerr << "frameRGB is invalid" << std::endl;
+//             continue; // frameRGB가 유효하지 않음
+//           }
 
-          sws_scale(swsContext, frameCPU->data, frameCPU->linesize, 0, height,
-                    frameRGB->data, frameRGB->linesize);
-          av_frame_free(&frameCPU);
+//           sws_scale(swsContext, frameCPU->data, frameCPU->linesize, 0,
+//           height,
+//                     frameRGB->data, frameRGB->linesize);
+//           av_frame_free(&frameCPU);
 
-          // sws_scale(swsContext, frame->data, frame->linesize, 0, height,
-          //           frameRGB->data, frameRGB->linesize);
+//           // sws_scale(swsContext, frame->data, frame->linesize, 0, height,
+//           //           frameRGB->data, frameRGB->linesize);
 
-          FrameBuffer fb;
-          fb.size = numBytes;
-          fb.data = (uint8_t *)av_malloc(numBytes);
-          if (!fb.data) {
-            std::cerr << "Memory allocation failed!" << std::endl;
-            break; // 메모리 할당 실패시 루프 종료
-          }
-          memcpy(fb.data, frameRGB->data[0], numBytes);
-          fb.pts = static_cast<int64_t>(
-              frame->pts *
-              videoTiming.getTimeBaseDouble()); // time_base를 고려하여 pts 보정
+//           FrameBuffer fb;
+//           fb.size = numBytes;
+//           fb.data = (uint8_t *)av_malloc(numBytes);
+//           if (!fb.data) {
+//             std::cerr << "Memory allocation failed!" << std::endl;
+//             break; // 메모리 할당 실패시 루프 종료
+//           }
+//           memcpy(fb.data, frameRGB->data[0], numBytes);
+//           fb.pts = static_cast<int64_t>(
+//               frame->pts *
+//               videoTiming.getTimeBaseDouble()); // time_base를 고려하여 pts
+//               보정
 
-          frameQueue.push(fb);
-        }
-      }
-    }
-    av_packet_unref(packet);
-  }
+//           frameQueue.push(fb);
+//         }
+//       }
+//     }
+//     av_packet_unref(packet);
+//   }
 
-  av_frame_free(&frame);
-  av_frame_free(&frameRGB);
-  av_packet_free(&packet);
-  av_free(buffer);
-}
+//   av_frame_free(&frame);
+//   av_frame_free(&frameRGB);
+//   av_packet_free(&packet);
+//   av_free(buffer);
+// }
