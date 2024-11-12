@@ -58,21 +58,17 @@ void main() {
 
 int main() {
   const char *rtspUrl =
-      "rtsp://admin:q1w2e3r4@@192.168.15.83:50554/rtsp/camera1/high";
+      // "rtsp://admin:q1w2e3r4@@192.168.15.83:50554/rtsp/camera1/high";
+      "rtsp://192.168.15.27/towncenter.mkv";
   // FFmpeg 네트워king 초기화
   avformat_network_init();
 
   auto [formatContext, videoStreamIndex] = open_rtsp_stream(rtspUrl);
-
-  FFmpegDecoder decoder;
-  decoder.initialize(formatContext, videoStreamIndex);
-
-  int width = decoder.width();
-  int height = decoder.height();
-  // SwsContext 설정
-  SwsContext *swsContext = sws_getContext(
-      width, height, AV_PIX_FMT_NV12 /*codecContext->pix_fmt*/, width, height,
-      AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr, nullptr);
+  // 코덱 설정
+  AVCodecParameters *codecParams =
+      formatContext->streams[videoStreamIndex]->codecpar;
+  auto width = codecParams->width;
+  auto height = codecParams->height;
 
   initializeGLFW();
   GLFWwindow *window = createGLFWWindow("RTSP Player", 640, 360);
@@ -108,7 +104,9 @@ int main() {
   }
 
   // 디코딩 스레드 시작
-  std::thread decodeThread(decodingThread, &decoder, swsContext);
+  std::thread decodeThread(decodingThread,
+                           /*&decoder, swsContext*/ formatContext,
+                           videoStreamIndex);
   // 메인 루프
   while (!glfwWindowShouldClose(window)) {
     FrameBuffer decodedFrame;
@@ -127,10 +125,8 @@ int main() {
   isPlaying = false;
   decodeThread.join();
 
-  decoder.deinitialize();
   //   avcodec_free_context(&codecContext);
   avformat_close_input(&formatContext);
-  sws_freeContext(swsContext);
 
   glDeleteProgram(shaderProgram);
 

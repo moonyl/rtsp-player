@@ -48,15 +48,23 @@ private:
   int numBytes;
 
   std::unique_ptr<VideoTiming> videoTiming;
+  AVPixelFormat hw_transfer_format;
+  bool using_hw_decoder;
+
+  SwsContext *swsContext;
 
 public:
   FFmpegDecoder()
       : _formatContext(nullptr), _codecContext(nullptr),
         //   swsContext(nullptr),
         hw_device_ctx(nullptr), _videoStreamIndex(-1), hw_frame(nullptr),
-        sw_frame(nullptr), rgb_frame(nullptr) {}
+        sw_frame(nullptr), rgb_frame(nullptr),
+        hw_transfer_format(AV_PIX_FMT_NONE), using_hw_decoder(false),
+        swsContext(nullptr) {}
 
-  bool initialize(AVFormatContext *formatContext, int videoStreamIndex) {
+  bool initialize(
+      AVFormatContext *formatContext, int videoStreamIndex /*AVCodecParameters
+          *codecParams*/) {
     _formatContext = formatContext;
     _videoStreamIndex = videoStreamIndex;
 
@@ -66,7 +74,16 @@ public:
     AVCodecParameters *codecParams =
         formatContext->streams[videoStreamIndex]->codecpar;
 
-    //   const AVCodec *codec = avcodec_find_decoder(codecParams->codec_id);
+    if (!initializeHWDecoder(codecParams)) {
+      if (!initializeSWDecoder(codecParams)) {
+        return false;
+      }
+    }
+
+    return initializeCommon();
+  }
+
+  bool initializeHWDecoder(AVCodecParameters *codecParams) {
     // HW decoder 사용
     const AVCodec *codec = avcodec_find_decoder_by_name("h264_cuvid");
     if (!codec) {
@@ -77,26 +94,87 @@ public:
     _codecContext = avcodec_alloc_context3(codec);
 
     // HW device context 설정
-    AVBufferRef *hw_device_ctx = nullptr;
     if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr,
                                nullptr, 0) < 0) {
       std::cerr << "Failed to create CUDA device context" << std::endl;
       avcodec_free_context(&_codecContext);
       return false;
     }
+
     _codecContext->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-    _codecContext->pkt_timebase =
-        formatContext->streams[videoStreamIndex]->time_base;
+
+    // 하드웨어 프레임 전송 포맷 확인
+    hw_transfer_format = AV_PIX_FMT_NONE;
+    for (int i = 0;; i++) {
+      const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+      if (!config) {
+        break;
+      }
+      if (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX &&
+          config->device_type == AV_HWDEVICE_TYPE_CUDA) {
+        hw_transfer_format = config->pix_fmt;
+        break;
+      }
+    }
+
+    if (hw_transfer_format == AV_PIX_FMT_NONE) {
+      avcodec_free_context(&_codecContext);
+      av_buffer_unref(&hw_device_ctx);
+      return false;
+    }
+
+    // _codecContext->pkt_timebase =
+    //     formatContext->streams[videoStreamIndex]->time_base;
 
     //   avcodec_parameters_to_context(codecContext, codecParams);
     //   avcodec_open2(codecContext, codec, nullptr);
     check_ffmpeg_error(
         avcodec_parameters_to_context(_codecContext, codecParams),
         "Failed to copy codec parameters to context");
+
+    _codecContext->pkt_timebase =
+        _formatContext->streams[_videoStreamIndex]->time_base;
+
     check_ffmpeg_error(avcodec_open2(_codecContext, codec, nullptr),
                        "Failed to open codec");
 
+    // 모든 초기화가 성공한 경우에만 하드웨어 디코더 사용 플래그 설정
+    using_hw_decoder = true;
+    return true;
+  }
+
+  bool initializeSWDecoder(AVCodecParameters *codecParams) {
+    const AVCodec *codec = avcodec_find_decoder(codecParams->codec_id);
+    if (!codec) {
+      return false;
+    }
+
+    _codecContext = avcodec_alloc_context3(codec);
+    if (!_codecContext) {
+      return false;
+    }
+
+    if (avcodec_parameters_to_context(_codecContext, codecParams) < 0) {
+      avcodec_free_context(&_codecContext);
+      return false;
+    }
+
+    _codecContext->pkt_timebase =
+        _formatContext->streams[_videoStreamIndex]->time_base;
+
+    if (avcodec_open2(_codecContext, codec, nullptr) < 0) {
+      avcodec_free_context(&_codecContext);
+      return false;
+    }
+
+    using_hw_decoder = false;
+    return true;
+  }
+  bool initializeCommon() {
+
+    // 프레임 및 패킷 할당
     hw_frame = av_frame_alloc();
+    sw_frame = av_frame_alloc();
     rgb_frame = av_frame_alloc();
     packet = av_packet_alloc();
 
@@ -130,6 +208,8 @@ public:
     av_frame_free(&rgb_frame);
     av_packet_free(&packet);
     av_free(buffer);
+
+    sws_freeContext(swsContext);
   }
 
   AVFormatContext *formatContext() const { return _formatContext; }
@@ -137,7 +217,7 @@ public:
   AVCodecContext *codecContext() const { return _codecContext; }
 
   using RetryCase = bool;
-  std::optional<RetryCase> decode(SwsContext *swsContext) {
+  std::optional<RetryCase> decode() {
     int ret = av_read_frame(_formatContext, packet);
     if (ret < 0) {
       // 에러 처리 개선:  av_read_frame의 에러 코드 확인
@@ -164,6 +244,16 @@ public:
             av_frame_free(&frameCPU);
             continue;
           }
+
+          if (!swsContext) {
+            AVPixelFormat pixFormat =
+                static_cast<AVPixelFormat>(frameCPU->format);
+            swsContext = sws_getContext(
+                width(), height(), pixFormat /*codecContext->pix_fmt*/, width(),
+                height(), AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr,
+                nullptr);
+          }
+          // SwsContext 설정
 
           if (!frameCPU || !frameCPU->data[0]) {
             std::cerr << "frameCPU is invalid" << std::endl;
@@ -206,12 +296,19 @@ public:
 };
 
 // 디코딩 스레드 함수
-void decodingThread(FFmpegDecoder *decoder, SwsContext *swsContext) {
+void decodingThread(AVFormatContext *formatContext, int videoStreamIndex
+                    /*FFmpegDecoder *decoder,*/ /*SwsContext *swsContext */) {
+  FFmpegDecoder decoder;
+  decoder.initialize(formatContext, videoStreamIndex);
+
+  int width = decoder.width();
+  int height = decoder.height();
 
   while (isPlaying) {
-    auto result = decoder->decode(swsContext);
+    auto result = decoder.decode();
     if (!result.has_value()) {
       break;
     }
   }
+  decoder.deinitialize();
 }
