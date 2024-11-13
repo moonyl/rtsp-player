@@ -1,6 +1,7 @@
 #pragma once
+#include <iostream>
 
-int initializeGLFW() {
+inline int initializeGLFW() {
   if (!glfwInit()) {
     const char *error;
     glfwGetError(&error);
@@ -17,7 +18,7 @@ int initializeGLFW() {
 }
 
 // GLAD 초기화 함수
-bool initGlad() {
+inline bool initGlad() {
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
     std::cerr << "Glad 초기화 실패" << std::endl;
     return false;

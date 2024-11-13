@@ -1,7 +1,8 @@
 #pragma once
+#include "check-error.h"
 
-unsigned int createShaderProgram(const char *vertexShaderSource,
-                                 const char *fragmentShaderSource) {
+inline unsigned int createShaderProgram(const char *vertexShaderSource,
+                                        const char *fragmentShaderSource) {
   // 버텍스 셰이더 컴파일
   unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
   glShaderSource(vertexShader, 1, &vertexShaderSource, nullptr);

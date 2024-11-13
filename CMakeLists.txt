@@ -51,6 +51,8 @@ add_executable(RTSPPlayer
     print-info.h
     vertex-buffer.h
     render-scene.h
+    Renderer.cpp
+    Renderer.h    
     main.cpp 
     ${GLAD_SOURCES})
 
@@ -64,12 +66,7 @@ target_link_libraries(RTSPPlayer
 )
 
 if(MSVC)
-    # 런타임 라이브러리 설정
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MDd")
-    
-    # MSVCRT 충돌 해결
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /NODEFAULTLIB:libcmt.lib")
+    target_link_options(RTSPPlayer PUBLIC "-NODEFAULTLIB:libcmt") # 또는 "-NODEFAULTLIB:msvcrt"
 endif()
 
 # DLL 복사 함수 정의

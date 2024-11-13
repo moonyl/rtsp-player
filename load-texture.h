@@ -1,6 +1,6 @@
 #pragma once
 
-unsigned int loadTexture(int width, int height) {
+inline unsigned int loadTexture(int width, int height) {
   unsigned int texture;
   glGenTextures(1, &texture);
   glBindTexture(GL_TEXTURE_2D, texture);

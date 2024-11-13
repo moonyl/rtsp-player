@@ -1,5 +1,7 @@
 #pragma once
 
+#include <condition_variable>
+#include <mutex>
 #include <queue>
 
 // 프레임 버퍼 구조체

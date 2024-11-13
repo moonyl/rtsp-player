@@ -1,7 +1,10 @@
 #pragma once
+extern "C" {
+#include <libavutil/mem.h>
+}
 
-void updateTexture(GLuint texture, const FrameBuffer &frame, int width,
-                   int height) {
+inline void updateTexture(GLuint texture, const FrameBuffer &frame, int width,
+                          int height) {
   if (frame.data == nullptr) {
     std::cerr << "Error: Frame data is null!" << std::endl;
     return;
@@ -12,7 +15,7 @@ void updateTexture(GLuint texture, const FrameBuffer &frame, int width,
   av_free(frame.data);
 }
 
-void renderScene(GLuint shaderProgram, GLuint texture, GLuint VAO) {
+inline void renderScene(GLuint shaderProgram, GLuint texture, GLuint VAO) {
   glClear(GL_COLOR_BUFFER_BIT);
   glUseProgram(shaderProgram);
   glActiveTexture(GL_TEXTURE0);

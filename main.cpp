@@ -1,11 +1,8 @@
 #include <chrono>
 #include <iostream> // iostream은 한 번만 포함합니다.
-#include <thread>
-
-#include <condition_variable>
-#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include "glad/glad.h"
 #include <GLFW/glfw3.h>
@@ -21,6 +18,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "Renderer.h"
 #include "check-error.h"
 #include "create-shader.h"
 #include "create-window.h"
@@ -33,73 +31,51 @@ extern "C" {
 #include "render-scene.h"
 #include "vertex-buffer.h"
 
-const char *vertexShaderSource = R"(
-#version 330 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec2 aTexCoord; // 텍스처 좌표 추가
-out vec2 TexCoord;
-
-void main() {
-    gl_Position = vec4(aPos, 1.0);
-    TexCoord = aTexCoord; // 텍스처 좌표 전송
+std::pair<AVFormatContext *, int> openStreamAndInitialize(const char *rtspUrl) {
+  avformat_network_init();
+  return open_rtsp_stream(rtspUrl);
 }
-)";
-
-const char *fragmentShaderSource = R"(
-#version 330 core
-out vec4 fragColor;
-in vec2 TexCoord;
-uniform sampler2D texture1; // 텍스처 샘플러
-
-void main() {
-    fragColor = texture(texture1, vec2(TexCoord.x, 1.0 - TexCoord.y)); // 영상 상하 반전
-}
-)";
 
 int main() {
-  const char *rtspUrl =
-      // "rtsp://admin:q1w2e3r4@@192.168.15.83:50554/rtsp/camera1/high";
-      "rtsp://192.168.15.27/towncenter.mkv";
-  // FFmpeg 네트워king 초기화
-  avformat_network_init();
+  auto [formatContext, videoStreamIndex] =
+      openStreamAndInitialize("rtsp://192.168.15.27/towncenter.mkv");
 
-  auto [formatContext, videoStreamIndex] = open_rtsp_stream(rtspUrl);
   // 코덱 설정
   AVCodecParameters *codecParams =
       formatContext->streams[videoStreamIndex]->codecpar;
   auto width = codecParams->width;
   auto height = codecParams->height;
 
-  initializeGLFW();
-  GLFWwindow *window = createGLFWWindow("RTSP Player", 640, 360);
+  // initializeGLFW();
+  // GLFWwindow *window = createGLFWWindow("RTSP Player", 640, 360);
 
-  if (!initGlad())
-    return -1;
+  // if (!initializeOpenGL(window))
+  //   return -1;
 
-  GL_CALL(glEnable(GL_DEBUG_OUTPUT));
-  GL_CALL(glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS));
-  GL_CALL(glDebugMessageCallback(MessageCallback, nullptr));
-  GL_CALL(glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE,
-                                GL_DEBUG_SEVERITY_MEDIUM, 0, nullptr, GL_TRUE));
+  // auto buffers = setupVAO();
+  // if (!buffers) {
+  //   std::cerr << "VAO/VBO/EBO 생성 실패" << std::endl;
+  //   return -1;
+  // }
 
-  printOpenGLInfo();
+  // unsigned int shaderProgram =
+  //     createShaderProgram(vertexShaderSource, fragmentShaderSource);
+  // if (shaderProgram == 0) {
+  //   std::cerr << "셰이더 프로그램 생성 실패" << std::endl;
+  //   return -1;
+  // }
 
-  auto buffers = setupVAO();
-  if (!buffers) {
-    std::cerr << "VAO/VBO/EBO 생성 실패" << std::endl;
-    return -1;
-  }
+  // unsigned int texture = loadTexture(width, height);
+  // if (texture == 0) {
+  //   std::cerr << "텍스처 로드 실패" << std::endl;
+  //   return -1;
+  // }
 
-  unsigned int shaderProgram =
-      createShaderProgram(vertexShaderSource, fragmentShaderSource);
-  if (shaderProgram == 0) {
-    std::cerr << "셰이더 프로그램 생성 실패" << std::endl;
-    return -1;
-  }
+  // auto buffers = initializeRendering(width, height);
 
-  unsigned int texture = loadTexture(width, height);
-  if (texture == 0) {
-    std::cerr << "텍스처 로드 실패" << std::endl;
+  Renderer renderer(width, height);
+  if (!renderer.initialize("RTSP Player")) {
+    std::cerr << "Renderer 초기화 실패" << std::endl;
     return -1;
   }
 
@@ -108,17 +84,19 @@ int main() {
                            /*&decoder, swsContext*/ formatContext,
                            videoStreamIndex);
   // 메인 루프
-  while (!glfwWindowShouldClose(window)) {
+  while (!renderer.windowShouldClose()) {
     FrameBuffer decodedFrame;
     if (!frameQueue.empty()) {
       decodedFrame = frameQueue.pop();
-      updateTexture(texture, decodedFrame, width, height);
+      // updateTexture(renderer.texture_, decodedFrame, width, height);
+      renderer.updateTexture(decodedFrame);
     }
 
-    renderScene(shaderProgram, texture, buffers->VAO); // buffers->VAO 사용
+    renderer.render();
 
-    glfwSwapBuffers(window);
-    glfwPollEvents();
+    // renderScene(shaderProgram, texture, buffers->VAO); // buffers->VAO 사용
+    // glfwSwapBuffers(window);
+    // glfwPollEvents();
   }
 
   // 정리
@@ -128,10 +106,10 @@ int main() {
   //   avcodec_free_context(&codecContext);
   avformat_close_input(&formatContext);
 
-  glDeleteProgram(shaderProgram);
+  // glDeleteProgram(shaderProgram);
 
-  glfwDestroyWindow(window);
-  glfwTerminate();
+  // glfwDestroyWindow(window);
+  // glfwTerminate();
 
   return 0;
 }

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "check-error.h"
+#include "glad/glad.h"
+
 struct Buffers {
   unsigned int VAO;
   unsigned int VBO;
@@ -13,7 +16,7 @@ struct Buffers {
 };
 
 // VBO, VAO, EBO 설정 함수 (수정)
-std::unique_ptr<Buffers> setupVAO() {
+inline std::unique_ptr<Buffers> setupVAO() {
   auto buffers = std::make_unique<Buffers>(); // unique_ptr 생성
   float vertices[] = {1.0f, 1.0f,  0.0f, 1.0f,  1.0f,  1.0f, -1.0f,
                       0.0f, 1.0f,  0.0f, -1.0f, -1.0f, 0.0f, 0.0f,

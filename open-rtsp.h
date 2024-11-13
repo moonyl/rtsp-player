@@ -1,7 +1,7 @@
 #pragma once
 
 // RTSP 스트림을 열고 비디오 스트림 정보를 가져오는 함수
-std::pair<AVFormatContext *, int> open_rtsp_stream(const char *rtspUrl) {
+inline std::pair<AVFormatContext *, int> open_rtsp_stream(const char *rtspUrl) {
   AVFormatContext *formatContext = nullptr;
   int videoStreamIndex = -1;
 

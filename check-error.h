@@ -1,6 +1,12 @@
 #pragma once
+
+extern "C" {
+#include <libavutil/error.h>
+}
+#include <iostream>
+
 // 에러 발생 시 예외를 던지는 함수
-void check_ffmpeg_error(int ret, const std::string &message) {
+inline void check_ffmpeg_error(int ret, const std::string &message) {
   if (ret < 0) {
     char errbuf[256];
     av_strerror(ret, errbuf, sizeof(errbuf));
@@ -9,7 +15,7 @@ void check_ffmpeg_error(int ret, const std::string &message) {
 }
 
 // 에러 처리를 위한 함수
-bool checkGLCall(const char *func, const char *file, int line) {
+inline bool checkGLCall(const char *func, const char *file, int line) {
   GLenum err = glGetError();
   if (err != GL_NO_ERROR) {
     std::cerr << "OpenGL Error (" << err << "): " << func << " in " << file
@@ -28,8 +34,8 @@ bool checkGLCall(const char *func, const char *file, int line) {
   } while (0)
 
 // Helper function to check for shader compilation/linking errors
-bool checkShaderCompilation(unsigned int shader,
-                            const std::string &shaderType) {
+inline bool checkShaderCompilation(unsigned int shader,
+                                   const std::string &shaderType) {
   int success;
   char infoLog[512];
   glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
@@ -41,7 +47,7 @@ bool checkShaderCompilation(unsigned int shader,
   return true;
 }
 
-bool checkProgramLinking(unsigned int program) {
+inline bool checkProgramLinking(unsigned int program) {
   int success;
   char infoLog[512];
   glGetProgramiv(program, GL_LINK_STATUS, &success);

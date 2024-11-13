@@ -1,6 +1,6 @@
 #pragma once
 
-GLFWwindow *createGLFWWindow(const char *title, int width, int height) {
+inline GLFWwindow *createGLFWWindow(const char *title, int width, int height) {
   GLFWwindow *window = glfwCreateWindow(width, height, title, NULL, NULL);
   if (!window) {
     const char *error;
